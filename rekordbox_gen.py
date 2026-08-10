@@ -1,9 +1,13 @@
 import platform
+from typing import Any
+from urllib.parse import quote
 
-from lxml import etree
-from lxml.builder import E
+from lxml import builder, etree  # type: ignore[attr-defined]
 
 from models import ExportedTrack
+
+# lxml's stubs type built elements as plain "object", so keep the builder untyped
+E: Any = builder.E
 
 TRACK_COLLECTION: dict[str, ExportedTrack] = {}
 
@@ -30,6 +34,13 @@ def set_length_key(key: str, element: etree.Element) -> None:
     element.set(key, str(len(element)))
 
 
+def format_track_location(location: str) -> str:
+    # Rekordbox expects percent-encoded file URLs
+    if platform.system() == "Windows":
+        return "file://localhost/" + quote(location.replace("\\", "/"), safe="/:")
+    return "file://localhost" + quote(location, safe="/")
+
+
 def create_track_elm(track: ExportedTrack) -> etree.Element:
     track_elm = E.TRACK(
         TrackID=str(track.id),
@@ -42,11 +53,10 @@ def create_track_elm(track: ExportedTrack) -> etree.Element:
         AverageBpm=str(track.track_context.bpm),
         Tonality=str(track.track_context.key),
         Rating=str(track.track_context.rating),
-        Colour=str(track.track_context.colour),
-        Location="file://localhost/" + track.track_context.location
-        if platform.system() == "Windows"
-        else "file://localhost" + track.track_context.location,
+        Location=format_track_location(track.track_context.location),
     )
+    if track.track_context.colour:
+        track_elm.set("Colour", track.track_context.colour)
 
     if track.beat_grid:
         tempo_elm = E.TEMPO(
@@ -86,6 +96,7 @@ def generate_xml(
             E.PRODUCT(Name="rekordbox", Version="6.5.2", Company="AlphaTheta"),
             Version="1.0.0",
         )
+    assert dj_playlist is not None
 
     collection_elm = find_or_create_element(1, "COLLECTION", dj_playlist)
 
@@ -116,7 +127,7 @@ def generate_xml(
     return dj_playlist
 
 
-def encode_xml_element(xml_element: etree.Element) -> str:
+def encode_xml_element(xml_element: etree.Element) -> bytes:
     s = etree.tostring(xml_element, pretty_print=True, encoding="utf-8")
     s = str(s, "utf-8")
     s = (

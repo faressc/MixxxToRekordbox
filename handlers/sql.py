@@ -38,7 +38,18 @@ TRACK_INFO_QUERY = """
                     id = :id
                 """
 
-CUE_POINT_QUERY = "SELECT hotcue,position,type,length,color,label from cues WHERE (cues.type = 1 or cues.type = 4) and cues.hotcue >= 0 and cues.track_id = :id"
+# Mixxx cue types: 1 = hot cue, 2 = main cue, 4 = loop, 6 = intro, 7 = outro.
+# Loops are exported with any hotcue index: >= 0 becomes a Rekordbox hot cue
+# loop, -1 (Mixxx's saved loop) becomes a memory loop.
+CUE_POINT_QUERY = """
+                SELECT hotcue, position, type, length, color, label
+                FROM cues
+                WHERE track_id = :id
+                    AND (
+                        (type = 1 AND hotcue >= 0)
+                        OR type IN (2, 4, 6, 7)
+                    )
+                """
 
 global _db_location
 

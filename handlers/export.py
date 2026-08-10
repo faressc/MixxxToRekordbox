@@ -1,10 +1,11 @@
 from functools import partial
 from multiprocessing import Manager
+from multiprocessing.managers import DictProxy
 from multiprocessing.pool import Pool
-from multiprocessing.synchronize import Semaphore
 from pathlib import Path
+from threading import Semaphore
 
-from lxml import etree
+from lxml import etree  # type: ignore[attr-defined]
 from tqdm import tqdm
 
 from handlers import sql as sql_handlers
@@ -18,8 +19,9 @@ from models import (
     ExportedTrack,
     KeyType,
     TrackContext,
+    mixxx_colour_to_rekordbox,
 )
-from offset_handlers import flush_offset_errors
+from offset_handlers import Mp3Decoder, flush_offset_errors
 from rekordbox_gen import (
     TRACK_COLLECTION,
     encode_xml_element,
@@ -28,8 +30,9 @@ from rekordbox_gen import (
 )
 
 
-def mixxx_cuepos_to_ms(cuepos: int, samplerate: int, channels: int):
-    return int((cuepos * 1000.0) / (samplerate * channels))
+def mixxx_cuepos_to_ms(cuepos: int, samplerate: int, channels: int) -> float:
+    # Keep sub-millisecond precision so cues land exactly where Mixxx has them
+    return (cuepos * 1000.0) / (samplerate * channels)
 
 
 def get_track_info(
@@ -64,7 +67,8 @@ def get_track_info(
         print(f"File not found at {track_location}")
         return None
 
-    if out_dir or out_format:
+    # out_format without out_dir is rejected in export_to_rekordbox_xml
+    if out_dir:
         track_location = change_track_location(
             track_location, out_dir, out_format, export_semaphore
         )
@@ -93,8 +97,13 @@ def get_track_info(
         location=track_location,
         key=key_type.get_key(key_id),
         rating=RATING_MAP[rating],
-        colour=colour,
+        colour=mixxx_colour_to_rekordbox(colour),
     ), (BeatGridInfo(beats, beats_version, samplerate) if beats else None)
+
+
+# Mixxx stores intro/outro as a single range, Rekordbox has no equivalent,
+# so their ends are exported as named memory cues
+RANGE_CUE_NAMES = {6: "Intro", 7: "Outro"}
 
 
 def get_cue_points(
@@ -102,25 +111,44 @@ def get_cue_points(
     samplerate: int,
     channels: int,
 ) -> list[CuePoint]:
-    return [
-        CuePoint(
-            cue_type,
-            cue_index,
-            mixxx_cuepos_to_ms(
-                int(cue_position),
-                samplerate,
-                channels,
-            ),
-            mixxx_cuepos_to_ms(
-                int(cue_position) + int(length),
-                samplerate,
-                channels,
-            ),
-            CueColour(hex(color)),
-            label,
+    cue_points = []
+    for (
+        cue_index,
+        cue_position,
+        cue_type,
+        length,
+        color,
+        label,
+    ) in sql_handlers.get_cue_points(track_id):
+        position_ms = mixxx_cuepos_to_ms(int(cue_position), samplerate, channels)
+        end_ms = mixxx_cuepos_to_ms(
+            int(cue_position) + int(length), samplerate, channels
         )
-        for (cue_index, cue_position, cue_type, length, color, label) in sql_handlers.get_cue_points(track_id)
-    ]
+        colour = CueColour(hex(color or 0))
+
+        if cue_type in RANGE_CUE_NAMES:
+            name = RANGE_CUE_NAMES[cue_type]
+            if int(cue_position) >= 0:
+                cue_points.append(
+                    CuePoint(
+                        cue_type,
+                        cue_index,
+                        position_ms,
+                        position_ms,
+                        colour,
+                        f"{name} start",
+                    )
+                )
+            if int(length) > 0:
+                cue_points.append(
+                    CuePoint(cue_type, cue_index, end_ms, end_ms, colour, f"{name} end")
+                )
+            continue
+
+        cue_points.append(
+            CuePoint(cue_type, cue_index, position_ms, end_ms, colour, label or "")
+        )
+    return cue_points
 
 
 def get_exported_track(
@@ -128,8 +156,9 @@ def get_exported_track(
     out_dir: str | None,
     out_format: str | None,
     key_type: KeyType,
+    mp3_decoder: Mp3Decoder | None,
     export_semaphore: Semaphore,
-    track_collection: dict,
+    track_collection: DictProxy,
 ) -> ExportedTrack | None:
     if track_id in track_collection:
         return track_collection[track_id]
@@ -149,6 +178,7 @@ def get_exported_track(
         cue_points=get_cue_points(
             track_id, track_context.samplerate, track_context.channels
         ),
+        mp3_decoder=mp3_decoder,
     )
 
 
@@ -161,6 +191,7 @@ def get_data_for_tracks(
     out_dir: str | None,
     out_format: str | None,
     key_type: KeyType,
+    mp3_decoder: Mp3Decoder | None,
     db_location: str | None,
 ) -> list[ExportedTrack]:
     manager = Manager()
@@ -182,6 +213,7 @@ def get_data_for_tracks(
                             out_dir=out_dir,
                             out_format=out_format,
                             key_type=key_type,
+                            mp3_decoder=mp3_decoder,
                             export_semaphore=export_semaphore,
                             track_collection=track_collection,
                         ),
@@ -205,6 +237,7 @@ def append_collection_to_element(
     out_dir: str | None,
     out_format: str | None,
     key_type: KeyType,
+    mp3_decoder: Mp3Decoder | None,
     db_location: str | None,
 ) -> etree.Element:
     if (
@@ -217,7 +250,9 @@ def append_collection_to_element(
     track_ids = sql_handlers.get_collection_tracks(collection_type, collection_id)
 
     return generate_xml(
-        get_data_for_tracks(track_ids, out_dir, out_format, key_type, db_location),
+        get_data_for_tracks(
+            track_ids, out_dir, out_format, key_type, mp3_decoder, db_location
+        ),
         collection_name,
         xml_element,
     )
@@ -230,6 +265,7 @@ def export_to_rekordbox_xml(
     mixxx_db_location: str | None,
     key_type: KeyType,
     collection_type: CollectionType,
+    mp3_decoder: Mp3Decoder | None = None,
 ) -> None:
     db_location = sql_handlers.get_mixxx_db_location(mixxx_db_location)
     if out_format and not out_dir:
@@ -252,10 +288,14 @@ def export_to_rekordbox_xml(
             out_dir,
             out_format,
             key_type,
+            mp3_decoder,
             db_location,
         )
         flush_offset_errors()
         print("")
+    if xml_element is None:
+        print(f"No {collection_type} were exported, rekordbox.xml was not written")
+        return
     with open("rekordbox.xml", "wb") as fd:
         fd.write(encode_xml_element(xml_element))
         fd.close()

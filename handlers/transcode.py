@@ -1,13 +1,13 @@
 import os
 import shutil
-from multiprocessing.synchronize import Semaphore
 from pathlib import Path
+from threading import Semaphore
 
 from pydub import AudioSegment
 from tinytag import TinyTag
 
 # Prevent spawning too many processes
-EXPORT_SEMAPHORE_COUNT = os.cpu_count() // 2
+EXPORT_SEMAPHORE_COUNT = (os.cpu_count() or 2) // 2
 
 BITRATE_MAP = {
     "mp3": "320k",

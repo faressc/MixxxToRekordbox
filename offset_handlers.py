@@ -2,6 +2,7 @@
 
 from logging import ERROR
 from pathlib import Path
+from platform import system
 from typing import Literal
 
 import eyed3.mp3.headers  # type: ignore
@@ -12,23 +13,23 @@ ACCEPTED_MP3_DECODERS: list[Mp3Decoder] = ["MAD", "CoreAudio", "FFmpeg"]
 
 
 eyed3.core.log.setLevel(ERROR)
-eyed3.id3.frames.log.setLevel(ERROR)
+eyed3.id3.frames.log.setLevel(ERROR)  # type: ignore[attr-defined]
 eyed3.mp3.headers.log.setLevel(ERROR)
 
 OFFSET_ERROR_MESSAGES: list[str] = []
 
 
 def has_xing_info(audiofile: eyed3.mp3.Mp3AudioFile) -> bool:
-    return audiofile.info.xing_header is not None
+    return audiofile.info.xing_header is not None  # type: ignore[attr-defined]
 
 
 def has_lame_tag(audiofile: eyed3.mp3.Mp3AudioFile) -> bool:
-    return len(audiofile.info.lame_tag) > 0
+    return len(audiofile.info.lame_tag) > 0  # type: ignore[attr-defined]
 
 
 def has_valid_CRC_tag(audiofile: eyed3.mp3.Mp3AudioFile) -> bool:
     try:
-        return audiofile.info.lame_tag["music_crc"] > 0
+        return audiofile.info.lame_tag["music_crc"] > 0  # type: ignore[attr-defined]
     except KeyError:
         return False
 
@@ -80,6 +81,7 @@ def get_offset_ms(track_path: str | Path, mp3_decoder: Mp3Decoder) -> int:
     if path.suffix == ".mp3":
         try:
             audiofile = eyed3.load(track_path)
+            assert isinstance(audiofile, eyed3.mp3.Mp3AudioFile)
             return get_offset_mp3(audiofile, mp3_decoder)
         except Exception as ex:
             OFFSET_ERROR_MESSAGES.append(f"{track_path}: {ex}")
@@ -87,8 +89,18 @@ def get_offset_ms(track_path: str | Path, mp3_decoder: Mp3Decoder) -> int:
     return 0
 
 
-def get_offset_sec(track_path: str | Path, mp3_decoder: Mp3Decoder = "MAD") -> float:
-    return get_offset_ms(track_path, mp3_decoder) / 1000.0
+def get_default_mp3_decoder() -> Mp3Decoder:
+    # Mixxx decodes MP3s with CoreAudio on macOS and libmad elsewhere,
+    # and each decoder pads a different amount of silence at the start
+    if system() == "Darwin":
+        return "CoreAudio"
+    return "MAD"
+
+
+def get_offset_sec(
+    track_path: str | Path, mp3_decoder: Mp3Decoder | None = None
+) -> float:
+    return get_offset_ms(track_path, mp3_decoder or get_default_mp3_decoder()) / 1000.0
 
 
 def flush_offset_errors() -> None:

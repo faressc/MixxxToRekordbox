@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 from typing import Literal
-from offset_handlers import get_offset_sec
-from proto.beats_pb2 import BeatGrid, BeatMap
+
+from offset_handlers import Mp3Decoder, get_offset_sec
+from proto.beats_pb2 import BeatGrid, BeatMap  # type: ignore[attr-defined]
 
 CollectionType = Literal["playlists", "crates"]
 
@@ -20,6 +21,33 @@ SERATO_COLOURS = [
 
 # 0 star = "0", 1 star = "51", 2 stars = "102", 3 stars = "153", 4 stars = "204", 5 stars = "255"
 RATING_MAP = {0: 0, 1: 51, 2: 102, 3: 153, 4: 204, 5: 255}
+
+# The only track colours Rekordbox recognises when importing XML.
+# Lemon is listed before Orange so that Mixxx's default yellow,
+# which is equidistant to both, resolves to Lemon.
+REKORDBOX_TRACK_COLOURS = [
+    "0xFF007F",  # Rose
+    "0xFF0000",  # Red
+    "0xFFFF00",  # Lemon
+    "0xFFA500",  # Orange
+    "0x00FF00",  # Green
+    "0x25FDE9",  # Turquoise
+    "0x0000FF",  # Blue
+    "0x660099",  # Violet
+]
+
+
+def mixxx_colour_to_rekordbox(colour: int | None) -> str:
+    if colour is None:
+        return ""
+    r, g, b = (colour >> 16) & 0xFF, (colour >> 8) & 0xFF, colour & 0xFF
+
+    def distance(rekordbox_colour: str) -> int:
+        rb = int(rekordbox_colour, 0)
+        rb_r, rb_g, rb_b = (rb >> 16) & 0xFF, (rb >> 8) & 0xFF, rb & 0xFF
+        return (r - rb_r) ** 2 + (g - rb_g) ** 2 + (b - rb_b) ** 2
+
+    return min(REKORDBOX_TRACK_COLOURS, key=distance)
 
 
 LancelotKey = Literal[
@@ -75,7 +103,7 @@ MusicalKey = Literal[
     "Bm",
 ]
 
-LANCELOT_MAP: dict[int, LancelotKey] = {
+LANCELOT_MAP: dict[int, LancelotKey | Literal[""]] = {
     21: "1A",
     12: "1B",
     16: "2A",
@@ -103,7 +131,7 @@ LANCELOT_MAP: dict[int, LancelotKey] = {
     0: "",
 }
 
-MUSICAL_MAP: dict[int, MusicalKey] = {
+MUSICAL_MAP: dict[int, MusicalKey | Literal[""]] = {
     21: "Abm",
     12: "B",
     16: "Ebm",
@@ -136,7 +164,7 @@ class KeyType(StrEnum):
     LANCELOT = auto()
     MUSICAL = auto()
 
-    def get_key(self, key_id: str) -> str:
+    def get_key(self, key_id: int) -> str:
         match self:
             case KeyType.LANCELOT:
                 return LANCELOT_MAP[key_id]
@@ -204,14 +232,14 @@ class TrackContext:
     samplerate: int
     channels: int
     bpm: float
-    key: LancelotKey | MusicalKey
+    key: str  # a LancelotKey, a MusicalKey or "" when unset
     rating: int
     colour: str
 
 
 @dataclass
 class CueColour:
-    hex_rgb: hex  # 0xRRGGBB
+    hex_rgb: str  # 0xRRGGBB
 
     @property
     def r_int(self) -> int:
@@ -228,7 +256,7 @@ class CueColour:
 
 @dataclass
 class CuePoint(dict):
-    cue_type: hex
+    cue_type: int
     cue_index: int
     cue_position: float
     cue_end: float
@@ -237,7 +265,7 @@ class CuePoint(dict):
 
     def __init__(
         self,
-        cue_type: hex,
+        cue_type: int,
         cue_index: int,
         cue_position: float,
         cue_end: float,
@@ -250,11 +278,17 @@ class CuePoint(dict):
         self.cue_color = cue_color
         self.cue_text = cue_text
 
-        if (cue_type == 1):  # Regular cues are 0 in RB and 1 in Mixxx
-            self.cue_type = 0
+        if cue_type == 4:  # Mixxx loops match Rekordbox loops
+            self.cue_type = 4
+        elif cue_type == 2:
+            # Mixxx's main cue is Rekordbox's Load cue, used for autocue
+            self.cue_type = 3
         else:
-            self.cue_type = cue_type
-       
+            # Hot cues (1) and intro/outro markers (6/7) map to regular
+            # Rekordbox cues; a cue_index of -1 (Mixxx's hotcue column)
+            # makes them memory cues
+            self.cue_type = 0
+
 
 @dataclass
 class ExportedTrack:
@@ -270,10 +304,11 @@ class ExportedTrack:
         track_context: TrackContext,
         beat_grid: BeatGridInfo | None,
         cue_points: list[CuePoint],
+        mp3_decoder: Mp3Decoder | None = None,
     ):
         self.id = id
         self.track_context = track_context
-        self.offset_sec = get_offset_sec(self.track_context.location)
+        self.offset_sec = get_offset_sec(self.track_context.location, mp3_decoder)
         if beat_grid:
             self._add_beat_grid(beat_grid)
         self.cue_points = []
@@ -286,14 +321,15 @@ class ExportedTrack:
         self.beat_grid = beat_grid
 
     def _add_new_cue_point(self, cue_point: CuePoint):
-        if not len(cue_point.cue_color.hex_rgb) == 8:
+        if len(cue_point.cue_color.hex_rgb) != 8:
             cue_point.cue_color.hex_rgb = SERATO_COLOURS[
                 len(self.cue_points) % len(SERATO_COLOURS)
             ]
-        cue_point.cue_position += self.offset_sec
+        # Cue positions are in milliseconds, the decoder offset in seconds
+        cue_point.cue_position += self.offset_sec * 1000
         cue_point.cue_position = max(0, cue_point.cue_position)
-        if cue_point.cue_type == 4: # Loop Hot Cue
-            cue_point.cue_end += self.offset_sec
+        if cue_point.cue_type == 4:  # Loop Hot Cue
+            cue_point.cue_end += self.offset_sec * 1000
             cue_point.cue_end = max(0, cue_point.cue_end)
 
         self.cue_points.append(cue_point)

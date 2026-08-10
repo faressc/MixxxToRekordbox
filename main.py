@@ -1,10 +1,11 @@
 import argparse
+
 from handlers.export import export_to_rekordbox_xml
 from models import (
     CollectionType,
     KeyType,
 )
-
+from offset_handlers import ACCEPTED_MP3_DECODERS, Mp3Decoder
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument(
@@ -30,6 +31,11 @@ arg_parser.add_argument(
     help=f"Specify a key type to export: {[kt.value for kt in KeyType]}, defaults to {KeyType.LANCELOT}",
 )
 arg_parser.add_argument(
+    "--mp3-decoder",
+    choices=ACCEPTED_MP3_DECODERS,
+    help="The decoder Mixxx uses for MP3s, needed to align beat grids and cues. Defaults to CoreAudio on macOS and MAD elsewhere.",
+)
+arg_parser.add_argument(
     "-c",
     "--use-crates",
     action="store_true",
@@ -44,11 +50,18 @@ def main() -> None:
     export_all: bool = args.export_all
     mixxx_db_location: str | None = args.mixxx_db_location
     key_type: KeyType = args.key_type or KeyType.LANCELOT
+    mp3_decoder: Mp3Decoder | None = args.mp3_decoder
     use_crates: bool = args.use_crates
     collection_type: CollectionType = "crates" if use_crates else "playlists"
 
     export_to_rekordbox_xml(
-        out_format, out_dir, export_all, mixxx_db_location, key_type, collection_type
+        out_format,
+        out_dir,
+        export_all,
+        mixxx_db_location,
+        key_type,
+        collection_type,
+        mp3_decoder,
     )
 
 
