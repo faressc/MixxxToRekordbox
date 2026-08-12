@@ -27,6 +27,7 @@ from rekordbox_gen import (
     encode_xml_element,
     format_track_id,
     generate_xml,
+    set_location_prefix,
 )
 
 
@@ -266,11 +267,14 @@ def export_to_rekordbox_xml(
     key_type: KeyType,
     collection_type: CollectionType,
     mp3_decoder: Mp3Decoder | None = None,
+    location_prefix: tuple[str, str] | None = None,
 ) -> None:
     db_location = sql_handlers.get_mixxx_db_location(mixxx_db_location)
     if out_format and not out_dir:
         raise Exception("Output directory must be specified if changing file formats.")
     sql_handlers.set_db_location(db_location)
+    if location_prefix:
+        set_location_prefix(*location_prefix)
 
     collections = sql_handlers.get_collections(collection_type)
 

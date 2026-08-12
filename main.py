@@ -41,6 +41,13 @@ arg_parser.add_argument(
     action="store_true",
     help="Source the tracks from crates instead of playlists, XML output will still be playlists.",
 )
+arg_parser.add_argument(
+    "--replace-prefix",
+    type=str,
+    metavar="SRC=DST",
+    help="Rewrite track locations starting with SRC to start with DST in the XML, "
+    "e.g. '/run/media/user/music-lib=/Volumes/music-lib' when the export is used on another OS.",
+)
 
 
 def main() -> None:
@@ -54,6 +61,13 @@ def main() -> None:
     use_crates: bool = args.use_crates
     collection_type: CollectionType = "crates" if use_crates else "playlists"
 
+    location_prefix: tuple[str, str] | None = None
+    if args.replace_prefix:
+        src, sep, dst = args.replace_prefix.partition("=")
+        if not sep or not src:
+            arg_parser.error("--replace-prefix must be of the form SRC=DST")
+        location_prefix = (src, dst)
+
     export_to_rekordbox_xml(
         out_format,
         out_dir,
@@ -62,6 +76,7 @@ def main() -> None:
         key_type,
         collection_type,
         mp3_decoder,
+        location_prefix=location_prefix,
     )
 
 

@@ -11,6 +11,13 @@ E: Any = builder.E
 
 TRACK_COLLECTION: dict[str, ExportedTrack] = {}
 
+_location_prefix: tuple[str, str] | None = None
+
+
+def set_location_prefix(src: str, dst: str) -> None:
+    global _location_prefix
+    _location_prefix = (src, dst)
+
 
 def format_track_id(track_id: int | str) -> str:
     return f"{int(track_id):010}"
@@ -35,6 +42,9 @@ def set_length_key(key: str, element: etree.Element) -> None:
 
 
 def format_track_location(location: str) -> str:
+    # Rewrite the path prefix if requested, e.g. to target another OS's mount point
+    if _location_prefix and location.startswith(_location_prefix[0]):
+        location = _location_prefix[1] + location[len(_location_prefix[0]) :]
     # Rekordbox expects percent-encoded file URLs
     if platform.system() == "Windows":
         return "file://localhost/" + quote(location.replace("\\", "/"), safe="/:")
