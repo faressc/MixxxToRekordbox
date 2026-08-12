@@ -33,9 +33,9 @@ TRACK_INFO_QUERY = """
                     library l
                 INNER JOIN
                     track_locations tl
-                USING (id)
+                ON tl.id = l.location
                 WHERE
-                    id = :id
+                    l.id = :id
                 """
 
 # Mixxx cue types: 1 = hot cue, 2 = main cue, 4 = loop, 6 = intro, 7 = outro.
